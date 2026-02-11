@@ -26,6 +26,8 @@ services:
       - HTTP_PROXY=http://host.docker.internal:20172
       - HTTPS_PROXY=http://host.docker.internal:20172
       - NO_PROXY=localhost,127.0.0.1,0.0.0.0,qdrant,rag-bot,rag-yandex-bot,rag-ingest,host.docker.internal,.ai.atomsk.ru,.dom.ru,192.168.42.11
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - qdrant
     networks:
@@ -63,6 +65,8 @@ services:
       - HTTP_PROXY=http://host.docker.internal:20172
       - HTTPS_PROXY=http://host.docker.internal:20172
       - NO_PROXY=localhost,127.0.0.1,0.0.0.0,qdrant,rag-bot,rag-yandex-bot,rag-ingest,host.docker.internal,.ai.atomsk.ru,.dom.ru,192.168.42.11
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
       - ingest_state:/app/state
