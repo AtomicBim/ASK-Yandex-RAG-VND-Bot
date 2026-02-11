@@ -8,6 +8,8 @@ services:
       - "6390:6333"
     volumes:
       - ./qdrant_data:/qdrant/storage
+    networks:
+      - rag_network
 
   # Бэкенд-сервис RAG (LLM)
   rag-bot:
@@ -20,26 +22,14 @@ services:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
+      # Proxy ---
+      - HTTP_PROXY=http://host.docker.internal:20172
+      - HTTPS_PROXY=http://host.docker.internal:20172
+      - NO_PROXY=localhost,127.0.0.1,0.0.0.0,qdrant,rag-bot,rag-yandex-bot,rag-ingest,host.docker.internal,.ai.atomsk.ru,.dom.ru,192.168.42.11
     depends_on:
       - qdrant
-
-  # UI (Gradio)
-  rag-chat:
-    build: ./rag-chat
-    container_name: rag_chat_service
-    restart: unless-stopped
-    ports:
-      - "7860:7860"
-    env_file:
-      - .env
-    environment:
-      - PYTHONUNBUFFERED=1
-      - QDRANT_HOST=qdrant
-    depends_on:
-      - rag-bot
-      - qdrant
-    volumes:
-      - ./data:/app/data
+    networks:
+      - rag_network
 
   # Yandex Bot
   rag-yandex-bot:
@@ -55,23 +45,35 @@ services:
     depends_on:
       - rag-bot
       - qdrant
+    networks:
+      - rag_network
 
   # Data Ingestion (Run manually or on schedule, but defined here for environment context)
   # docker-compose run rag-ingest python ingest.py
   rag-ingest:
     build: ./rag-ingest
     container_name: rag_ingest_utility
-    profiles: [ "tools" ] # Won't start by default
+    profiles: [ "tools" ]
     env_file:
       - .env
     environment:
       - QDRANT_HOST=qdrant
       - DOCS_DIR=/app/data
+      # Proxy (если нужен для OpenRouter эмбеддингов)
+      - HTTP_PROXY=http://host.docker.internal:20172
+      - HTTPS_PROXY=http://host.docker.internal:20172
+      - NO_PROXY=localhost,127.0.0.1,0.0.0.0,qdrant,rag-bot,rag-yandex-bot,rag-ingest,host.docker.internal,.ai.atomsk.ru,.dom.ru,192.168.42.11
     volumes:
       - ./data:/app/data
       - ingest_state:/app/state
     depends_on:
       - qdrant
+    networks:
+      - rag_network
 
 volumes:
   ingest_state:
+
+networks:
+  rag_network:
+    driver: bridge

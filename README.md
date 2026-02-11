@@ -106,18 +106,6 @@ EXPOSE 8000
 CMD ["python", "ask_question.py"]
 ```
 
-### Dockerfile для rag-chat
-
-```dockerfile  
-FROM mirror.gcr.io/library/python:3.11-slim-bullseye
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-EXPOSE 7860
-CMD ["python", "main_app.py"]
-```
-
 ## Зависимости
 
 ### rag-bot/requirements.txt
@@ -129,9 +117,6 @@ CMD ["python", "main_app.py"]
 - `google-generativeai` - клиент для Google Gemini
 - `httpx[socks]` - HTTP клиент с поддержкой SOCKS прокси
 
-### rag-chat/requirements.txt
-- `qdrant-client==1.9.0` - клиент для Qdrant векторной БД
-
 4. **Проверка статуса:**
    ```bash
    docker-compose ps
@@ -139,7 +124,6 @@ CMD ["python", "main_app.py"]
 
 ### Доступ к сервисам
 
-- **Gradio интерфейс:** http://localhost:7860
 - **FastAPI документация:** http://localhost:8000/docs
 - **Health check:** http://localhost:8000/generate_answer
 

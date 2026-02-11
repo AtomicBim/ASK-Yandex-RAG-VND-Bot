@@ -7,14 +7,10 @@ import sys
 import asyncio
 import logging
 import aiohttp
-from typing import Dict, List, Optional
 from dotenv import load_dotenv
 
 from yandex_api import YandexMessengerClient
-# from workflow import FileProcessor # Keeping these for now if needed, but RAG is priority
-# from email_sender import EmailSender
 from health_server import start_health_server
-# from llm_integration import create_llm_keyboard, request_analysis
 
 from qdrant_client import QdrantClient
 from openai import AsyncOpenAI
@@ -54,189 +50,6 @@ openai_client = AsyncOpenAI(
     api_key=OPENROUTER_API_KEY,
     base_url="https://openrouter.ai/api/v1"
 ) if OPENROUTER_API_KEY else None
-
-# Track processing state per chat
-processing_chats: Dict[str, bool] = {}
-
-# Track last processed JSON file path per chat (for LLM callbacks)
-last_json_files: Dict[str, str] = {}
-
-# Track hash -> filename mapping for short callback_data
-file_hash_mapping: Dict[str, str] = {}
-
-# Track completed analyses per file_hash: {file_hash: set(analysis_types)}
-completed_analyses: Dict[str, set] = {}
-
-
-async def handle_file_message(client: YandexMessengerClient, message: dict):
-    """
-    Handle incoming file message from user
-
-    Args:
-        client: Yandex API client
-        message: Message dict with file info
-    """
-    # Yandex API: chat_id can be in different places depending on API response structure
-    chat_info = message.get("chat", {})
-    chat_id = chat_info.get("chat_id") if isinstance(chat_info, dict) else None
-
-    # For private chats, use login from 'from' field
-    if not chat_id and "from" in message and chat_info.get("type") == "private":
-        chat_id = message.get("from", {}).get("login")
-
-    message_id = message.get("message_id")
-
-    if not chat_id:
-        logger.error(f"No chat_id in message: {message}")
-        return
-
-    # Check if already processing for this chat
-    if processing_chats.get(chat_id, False):
-        await client.send_message(
-            chat_id,
-            "⏳ Обработка предыдущего файла ещё не завершена. Пожалуйста, подождите."
-        )
-        return
-
-    # Mark chat as processing
-    processing_chats[chat_id] = True
-
-    try:
-        # Get file info
-        file_info = message.get("file") or message.get("voice")
-        if not file_info:
-            await client.send_message(chat_id, "❌ Файл не найден в сообщении.")
-            return  # Will trigger finally block
-
-        # Yandex API can use either "file_id" or "id" field
-        file_id = file_info.get("file_id") or file_info.get("id")
-        file_name = file_info.get("name") or file_info.get("filename", "unknown")
-
-        logger.info(f"Received file from chat {chat_id}: {file_name} (ID: {file_id})")
-
-        # Send initial status
-        await client.send_message(
-            chat_id,
-            f"📥 Получен файл: {file_name}\n🔄 Начинаю обработку..."
-        )
-
-        # Download file
-        file_path = await client.download_file(file_id, file_name)
-        if not file_path:
-            await client.send_message(chat_id, "❌ Не удалось скачать файл.")
-            return  # Will trigger finally block
-
-        logger.info(f"File downloaded to: {file_path}")
-
-        # Initialize processor
-        processor = FileProcessor(
-            audio_extractor_url=AUDIO_EXTRACTOR_URL,
-            speech_recognition_url=SPEECH_RECOGNITION_URL
-        )
-
-        # Process file with status updates
-        async def status_callback(status: str):
-            """Send status updates to user"""
-            await client.send_message(chat_id, status)
-
-        result = await processor.process_file(file_path, file_name, status_callback)
-
-        if result["status"] == "success":
-            # Extract user email from message (from Yandex login)
-            user_email = message.get("from", {}).get("login")
-
-            if not user_email:
-                logger.error(f"Cannot extract user email from message: {message}")
-                await client.send_message(
-                    chat_id,
-                    "❌ Не удалось определить ваш email адрес для отправки результата."
-                )
-                return  # Will trigger finally block
-
-            # Save JSON to shared volume for LLM analysis
-            import json
-            import hashlib
-            json_dir = "/app/shared/transcripts"
-            os.makedirs(json_dir, exist_ok=True)
-
-            # Create unique filename
-            base_name = os.path.splitext(file_name)[0]
-            json_filename = f"{base_name}_transcript.json"
-            json_path = os.path.join(json_dir, json_filename)
-
-            try:
-                with open(json_path, 'w', encoding='utf-8') as f:
-                    json.dump(result["result"], f, ensure_ascii=False, indent=2)
-                logger.info(f"Transcript saved to: {json_path}")
-
-                # Store JSON path for this chat (for LLM callbacks)
-                last_json_files[chat_id] = json_path
-
-                # Store hash mapping for short callback_data
-                file_hash = hashlib.md5(json_filename.encode()).hexdigest()[:8]
-                file_hash_mapping[file_hash] = json_path
-                logger.debug(f"Hash mapping: {file_hash} -> {json_path}")
-            except Exception as e:
-                logger.error(f"Failed to save transcript JSON: {e}")
-
-            # Send success message
-            metadata = result["result"]["metadata"]
-            await client.send_message(
-                chat_id,
-                f"✅ Обработка завершена!\n\n"
-                f"📊 Статистика:\n"
-                f"⏱ Время обработки: {metadata['processing_time']}\n"
-                f"🎙 Сегментов: {metadata['num_segments']}\n"
-                f"👥 Спикеров: {metadata['num_speakers']}\n"
-                f"📝 Символов текста: {metadata['total_text_length']}\n\n"
-                f"📧 Отправляю результат на {user_email}..."
-            )
-
-            # Send result via email to user's address
-            email_sender = EmailSender()
-            email_sent = await email_sender.send_result(
-                result["result"],
-                file_name,
-                user_email
-            )
-
-            if not email_sent:
-                await client.send_message(
-                    chat_id,
-                    "⚠️ Не удалось отправить email с результатом."
-                )
-            else:
-                await client.send_message(
-                    chat_id,
-                    f"✅ Email с результатом успешно отправлен на {user_email}!"
-                )
-
-                # Add LLM analysis keyboard (optional feature)
-                keyboard = create_llm_keyboard(json_path, file_hash)
-                await client.send_message(
-                    chat_id,
-                    "🤖 Хотите дополнительный анализ с помощью AI?\n\n"
-                    "Выберите тип анализа:",
-                    inline_keyboard=keyboard
-                )
-
-        else:
-            # Send error message
-            await client.send_message(
-                chat_id,
-                f"❌ Ошибка обработки:\n{result.get('error', 'Unknown error')}"
-            )
-
-    except Exception as e:
-        logger.error(f"Error handling file message: {e}", exc_info=True)
-        await client.send_message(
-            chat_id,
-            f"❌ Произошла ошибка: {str(e)}"
-        )
-
-    finally:
-        # Release processing lock
-        processing_chats[chat_id] = False
 
 
 async def handle_callback_query(client: YandexMessengerClient, callback_query: dict):
@@ -342,10 +155,6 @@ async def main():
     logger.info(f"RAG Endpoint: {RAG_BOT_ENDPOINT}")
     logger.info(f"Qdrant: {QDRANT_HOST}:{QDRANT_PORT}")
 
-    # Clear any stale processing states from previous crash/restart
-    processing_chats.clear()
-    logger.info("Cleared processing state cache")
-
     # Initialize client
     client = YandexMessengerClient(YANDEX_BOT_TOKEN)
 
@@ -381,11 +190,6 @@ async def main():
                     # Check for text message
                     if "text" in message:
                         asyncio.create_task(handle_text_message(client, message))
-                    elif "file" in message or "voice" in message:
-                         # Stub for file handling if dependencies are missing
-                         chat_id = message.get("from", {}).get("login")
-                         if chat_id:
-                             await client.send_message(chat_id, "⚠️ Обработка файлов временно отключена.")
                     elif "callback_data" in message:
                         asyncio.create_task(handle_callback_query(client, message))
 
